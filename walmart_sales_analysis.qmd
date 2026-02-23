@@ -1,0 +1,234 @@
+---
+title: "Data Exploration and Econometric Analysis of Walmart Sales"
+author: "Vaishnavi Thorat"
+format: html
+editor: visual
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Introduction
+
+This project analyzes Walmart weekly sales data to understand how temperature affects store-level sales. The primary research question is:
+
+Do higher temperatures causally affect weekly sales?
+
+Because temperature is determined by weather conditions, it is plausibly outside the control of individual stores. In the regression analysis, I include store and date fixed effects to control for permanent store differences and common time shocks. Therefore, the estimated effect is identified from within-store changes in temperature over time, holding constant permanent store characteristics and common time shocks.
+
+## Data Preparation
+
+To begin the analysis, I load the necessary R packages for data cleaning (tidyverse), date handling (lubridate), and fixed effects regression estimation (fixest). I then load the Walmart sales dataset using a relative file path so that the analysis can be reproduced on another machine. The Date variable is converted into a proper date format to allow time-based analysis, and Store is treated as a categorical variable because it represents distinct store identifiers. Holiday_Flag is a binary indicator (0/1) capturing holiday weeks, which directly affect sales. \## Load data (relative path)
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(fixest)
+
+
+df <- read_csv("data/Walmart_Sales.csv", show_col_types = FALSE)
+
+# Convert Date (day-month-year)
+df <- df %>%
+  mutate(
+    Date = dmy(Date),
+    Store = factor(Store),
+    Holiday_Flag = factor(Holiday_Flag)
+  )
+
+# Quick checks
+dim(df)
+names(df)
+glimpse(df)
+
+summary(df$Date)
+sum(is.na(df$Date))
+
+```
+
+The dataset contains 6,435 weekly observations and 8 variables. The date conversion was successful, and no missing values were introduced during the transformation. The data is now correctly structured and ready for exploratory analysis and regression modeling.
+
+## Exploratory Analysis: Temperature and Sales
+
+Before estimating regression models, I first visualize the relationship between temperature and weekly sales. Graphical analysis helps determine whether the relationship appears linear or nonlinear, which is important for choosing the correct functional form in the regression model.
+
+# Graph 1: raw relationship (helps decide linear vs nonlinear)
+
+```{r}
+ggplot(df, aes(x = Temperature, y = Weekly_Sales)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "Weekly Sales vs Temperature (Raw)",
+    x = "Temperature (F)",
+    y = "Weekly Sales"
+  )
+```
+
+The plot suggests a nonlinear (inverted U-shaped) relationship between temperature and sales. Sales appear to increase as temperatures rise from low levels, but decline when temperatures become very high. However, this relationship is descriptive and may reflect other factors such as seasonality or differences across stores. The visual evidence suggests that a quadratic temperature term may be appropriate in the regression model.
+
+## Log Transformation and Functional Form
+
+Because weekly sales vary substantially across stores and contain large numeric values, I transform sales using the natural logarithm. Logging the dependent variable allows coefficients to be interpreted in approximate percentage terms and often stabilizes variance. I then re-examine the relationship between temperature and log sales to determine whether the nonlinear pattern persists.
+
+```{r}
+df <- df %>%
+  mutate(log_sales = log(Weekly_Sales))
+
+# Plot Temperature vs log(Sales)
+ggplot(df, aes(x = Temperature, y = log_sales)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "Log Weekly Sales vs Temperature",
+    x = "Temperature (F)",
+    y = "Log Weekly Sales"
+  )
+```
+
+The log-scale plot continues to show a nonlinear relationship between temperature and sales. The inverted U-shaped pattern remains visible, indicating that a quadratic temperature specification is appropriate even after transformation. Therefore, the regression model will include both Temperature and Temperature².
+
+## Constructing the Quadratic Term
+
+To capture the nonlinear relationship observed in the plots, I construct a squared temperature variable. Including both Temperature and Temperature² in the regression allows the marginal effect of temperature to vary across different temperature levels and formally test for an inverted U-shaped relationship.
+
+```{r}
+df <- df %>%
+  mutate(temp_sq = Temperature^2)
+```
+
+## Baseline Linear Specification
+
+I begin with a simple linear regression of log weekly sales on temperature. This baseline model provides an initial estimate of the relationship, but it does not yet control for store-level differences or seasonality. Therefore, it should be interpreted cautiously.
+
+```{r}
+m1 <- feols(log_sales ~ Temperature, data = df)
+
+summary(m1)
+```
+
+The linear model estimates a statistically significant negative relationship between temperature and log sales. This implies that, on average, higher temperatures are associated with lower sales in this simple specification. However, this model assumes a constant linear effect, which contradicts the nonlinear pattern observed in the earlier graphs. Therefore, I next estimate a quadratic specification that better matches the visual evidence.
+
+## Quadratic Specification
+
+Based on the graphs, the relationship between temperature and sales appears nonlinear. I therefore estimate a quadratic model including both Temperature and Temperature² to capture a possible inverted U-shaped pattern.
+
+```{r}
+m2 <- feols(log_sales ~ Temperature + temp_sq, data = df)
+
+summary(m2)
+```
+
+Temperature is positive and significant, while Temperature² is negative and significant. This suggests sales increase with temperature at lower level, reach a peak, and then decline at higher temoeratures.
+
+## Store Fixed Effects Model
+
+Next, I include Store fixed effects to control for time-invariant differences across stores, such as location, size, or customer base. This helps isolate the effect of temperature within the same store over time.
+
+```{r}
+m3 <- feols(log_sales ~ Temperature + temp_sq | Store, data = df)
+
+summary(m3)
+```
+
+After controlling for store fixed effects, Temperature remains positive and significant, and Temperature² remains negative and significant. This suggests the nonlinear relationship is not driven by differences across stores but holds within stores over time.
+
+## Two-Way Fixed Effects Model
+
+Next, I include both Store and Date fixed effects. Store fixed effects control for permanent differences across stores, while Date fixed effects control for common shocks affecting all stores in a given week (such as seasonality or macroeconomic conditions). This specification strengthens the causal interpretation.
+
+```{r}
+m4 <- feols(log_sales ~ Temperature + temp_sq | Store + Date, data = df)
+
+summary(m4)
+```
+
+Even after controlling for store and time fixed effects, Temperature remains positive and significant, and Temperature² remains negative and significant. This suggests a robust nonlinear relationship between temperature and sales that holds within stores over time.
+
+## Clustered Standard Errors
+
+To account for potential correlation of errors within stores over time, I cluster standard errors at the store level. This provides more reliable inference when observations within the same store may not be independent.
+
+```{r}
+m5 <- feols(
+  log_sales ~ Temperature + temp_sq | Store + Date,
+  data = df,
+  cluster = ~Store
+)
+
+summary(m5)
+```
+
+After clustering at the store level, Temperature and Temperature² remain statistically significant. This indicates that the nonlinear temperature effect is robust to within-store error correlation.
+
+## Turning Point Calculation
+
+To interpret the quadratic model, I calculate the turning point of the temperature-sales relationship using the formula −β₁ / (2β₂). This identifies the temperature level at which sales reach their maximum.
+
+```{r}
+beta1 <- coef(m5)["Temperature"]
+beta2 <- coef(m5)["temp_sq"]
+
+turning_point <- -beta1 / (2 * beta2)
+
+turning_point
+```
+
+The estimated turning point is approximately 81°F. This means weekly sales increase with temperature up to about 81 degrees, after which sales begin to decline. This confirms the inverted U-shaped relationship.
+
+## Full Model with Controls
+
+> Finally, I add economic control variables (Fuel Price, CPI, Unemployment, and Holiday Flag) to account for other factors that may influence sales. This helps reduce omitted variable bias and improves the credibility of the estimated temperature effect.
+
+```{r}
+m6 <- feols(
+  log_sales ~ Temperature + temp_sq + Fuel_Price + CPI + Unemployment + Holiday_Flag | Store + Date,
+  data = df,
+  cluster = ~Store
+)
+
+summary(m6)
+```
+
+Even after adding control variables, Temperature remains positive and significant, and Temperature² remains negative and significant. This suggests the nonlinear temperature effect on sales is robust. Among the controls, Unemployment has a negative and significant effect, while Fuel Price and CPI are not statistically significant.
+
+## Two-Way Clustered Robust Model
+
+Finally, I cluster standard errors at both the Store and Date levels. This accounts for correlation of errors within stores over time and common shocks across stores in the same week, providing the most robust inference.
+
+```{r}
+m7 <- feols(
+  log_sales ~ Temperature + temp_sq + Fuel_Price + CPI + Unemployment + Holiday_Flag | Store + Date,
+  data = df,
+  cluster = ~Store + Date
+)
+
+summary(m7)
+```
+
+> Even with two-way clustering and full controls, Temperature remains positive and statistically significant, while Temperature² remains negative and significant. This confirms a robust nonlinear relationship between temperature and weekly sales.
+
+## Model Comparison and Robustness Check
+
+To clearly compare specifications, I present a summary table contrasting the two-way fixed effects model (M4) with the full model including controls and two-way clustered standard errors (M7). This allows evaluation of robustness across specifications.
+
+```{r}
+if (!require(modelsummary)) install.packages("modelsummary")
+library(modelsummary)
+
+modelsummary(
+  list(
+    "FE Model" = m4,
+    "Full Model (2-way cluster)" = m7
+  ),
+  statistic = "({std.error})",
+  stars = TRUE
+)
+```
+
+Across both specifications, Temperature remains positive and significant, while Temperature² remains negative and significant. The results are stable even after adding controls and two-way clustering, indicating a robust nonlinear relationship between temperature and weekly sales.
+
+## Conclusion
+
+This analysis examined whether temperature affects weekly sales using Walmart store-level panel data. Across multiple specifications including quadratic models, store and date fixed effects, control variables, and clustered standard errors the results consistently show a nonlinear relationship between temperature and sales. Sales increase as temperatures rise up to approximately 81°F, after which sales begin to decline. The stability of the coefficients across models suggests that this nonlinear pattern is robust to different specifications and inference adjustments. Overall, the findings indicate a strong and consistent inverted U-shaped relationship between temperature and weekly sales.
